@@ -2,7 +2,7 @@
 
 # Global Variables:
 # -----------------
-# g_compose_projects: Array to hold Docker Compose projects
+# g_running_compose_projects: Array to hold Docker Compose projects
 # g_update_lines: Array to hold lines from the 'cup check' output
 # -----------------
 
@@ -11,6 +11,7 @@ set -eou pipefail
 
 # Debug options
 VERBOSE=0
+DEBUG=1
 
 # Set VERBOSE to 1 to enable debug mode
 if [ "$VERBOSE" -eq 1 ]; then
@@ -27,7 +28,7 @@ declare -ag g_update_images
 
 # Global array for Docker Compose projects.
 # Each element will hold a line with the project name and the path to its compose file.
-declare -ag g_compose_projects
+declare -ag g_running_compose_projects
 
 
 # -----------------------------------------------------------------------------
@@ -72,11 +73,16 @@ get_update_images() {
     while IFS= read -r image; do
         g_update_images+=("$image")
     done < <(jq -r '.images[] | select(.result.has_update == true) | .reference' "$INPUT_FILE")
+    # jq -r '.images[] | select(.result.has_update == true) | [.reference, .result.info.current_version, .result.info.new_version] | join("\t")'
 
-    # Print extracted images (for debugging purposes)
-    for img in "${g_update_images[@]}"; do
-        echo "$img"
-    done
+    if [ "$DEBUG" -eq 1 ]; then
+        # Print extracted images (for debugging purposes)
+        echo "[ DEBUG ] Extracted update images:"
+        echo "[ DEBUG ] ============================================================"
+        for img in "${g_update_images[@]}"; do
+            echo "[ DEBUG ] $img"
+        done
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -87,18 +93,18 @@ get_update_images() {
 # Each project is stored as a string with the project name and its associated compose file.
 # -----------------------------------------------------------------------------
 get_compose_projects() {
-    if ! mapfile -t g_compose_projects < <(docker compose ls --format json | jq -r '.[] | "\(.Name) \(.ConfigFiles)"'); then
+    if ! mapfile -t g_running_compose_projects < <(docker compose ls --format json | jq -r '.[] | "\(.Name) \(.ConfigFiles)"'); then
         echo "Error: Failed to get Docker Compose projects list"
         exit 1
     fi
 
-    if [ ${#g_compose_projects[@]} -eq 0 ]; then
+    if [ ${#g_running_compose_projects[@]} -eq 0 ]; then
         echo "Warning: No Docker Compose projects found"
         exit 1
     fi
 
     # Print the list of projects (for debugging purposes)
-    for project in "${g_compose_projects[@]}"; do
+    for project in "${g_running_compose_projects[@]}"; do
         echo "$project"
     done
 }
@@ -146,13 +152,13 @@ update_service() {
 # Function: get_max_project_length
 # -----------------------------------------------------------------------------
 # This function calculates the maximum length of project names in the
-# g_compose_projects array. It returns the maximum length.
+# g_running_compose_projects array. It returns the maximum length.
 # -----------------------------------------------------------------------------
 get_max_project_length() {
     local length=0
     local max=0
 
-    for project in "${g_compose_projects[@]}"; do
+    for project in "${g_running_compose_projects[@]}"; do
         project_name=$(echo "$project" | awk '{print $1}')
         length=${#project_name}
         if (( length > max )); then
@@ -217,13 +223,13 @@ main() {
     declare -a available_update_keys=()
 
     # For printing the table, get the max length of project names.
-    max_length=$(get_max_project_length)
+    longest_project_length=$(get_max_project_length)
 
-    printf "%-${max_length}s %-20s\n" "Project" "Message"
-    printf "%-${max_length}s %-20s\n" $(printf '%*s' "$max_length" | tr ' ' '-') $(printf '%*s' "60" | tr ' ' '-')
+    printf "%-${longest_project_length}s %-20s\n" "Project" "Message"
+    printf "%-${longest_project_length}s %-20s\n" $(printf '%*s' "$longest_project_length" | tr ' ' '-') $(printf '%*s' "60" | tr ' ' '-')
 
     # Check each Docker Compose project.
-    for project in "${g_compose_projects[@]}"; do
+    for project in "${g_running_compose_projects[@]}"; do
         # Expecting: "project_name compose_file_path"
         project_name=$(echo "$project" | awk '{print $1}')
         compose_file=$(echo "$project" | awk '{print $2}')
@@ -236,11 +242,11 @@ main() {
 
         # Use grep to search the compose file for any update images.
         if grep -qE "image:\s*.*($regex_pattern)" "$compose_file"; then
-            printf "%-${max_length}s %-20s\n" "🔴 $project_name" "Update Available"
+            printf "%-${longest_project_length}s %-20s\n" "🔴 $project_name" "Update Available"
             available_updates["$project_name"]="$project_dir"
             available_update_keys+=("$project_name")
         else
-            printf "%-${max_length}s %-20s\n" "🟢 $project_name" "Ok"
+            printf "%-${longest_project_length}s %-20s\n" "🟢 $project_name" "Ok"
         fi
     done
 
@@ -253,7 +259,7 @@ main() {
     echo "List of projects with available updates:"
 
     id_width=4
-    proj_width=$max_length
+    proj_width=$longest_project_length
     path_width=60
 
     # Print table header
